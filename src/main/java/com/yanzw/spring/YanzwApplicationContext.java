@@ -3,8 +3,11 @@ package com.yanzw.spring;
 import com.yanzw.spring.utils.StringUtils;
 
 import java.io.File;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
+import java.util.List;
+import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -16,6 +19,7 @@ public class YanzwApplicationContext {
     private Class configClass;
     private ConcurrentHashMap<String, Object> singleObjects = new ConcurrentHashMap<>();//单例池
     private ConcurrentHashMap<String, BeanDefinition> beanDefinitionMap = new ConcurrentHashMap<>();
+    private List<BeanPostProcessor> beanPostProcessorList = new Vector<>();
     private static final String SINGLETON_BEAN = "singleton";
 
     public YanzwApplicationContext(Class configClass) {
@@ -33,13 +37,29 @@ public class YanzwApplicationContext {
     private Object creatBean(String beanName , BeanDefinition beanDefinition){
         Class clazz = beanDefinition.getClazz();
         try {
-            Object instance = clazz.getDeclaredConstructor().newInstance();
-            Object bean = getBean(beanName);
-            if(null==bean){
-                bean = instance;
+            Object newInstance = clazz.getDeclaredConstructor().newInstance();
+            //依赖注入  对属性进行赋值
+            for (Field declaredField : clazz.getDeclaredFields()) {
+                if (declaredField.isAnnotationPresent(Autowired.class)) {
+                    //比较简单的实现
+                    Object bean = getBean(beanName);
+                    declaredField.setAccessible(true);
+                    declaredField.set(newInstance,bean);
+                }
             }
-            beanDefinitionMap.put(beanName,beanDefinition);
-            return instance;
+            if(newInstance instanceof BeanNameAware){
+                ((BeanNameAware)newInstance).setBeanName(beanName);
+            }
+            for (BeanPostProcessor beanPostProcessor : beanPostProcessorList) {
+                newInstance = beanPostProcessor.postProcessBeforeInitialization(newInstance,beanName);
+            }
+            if(newInstance instanceof InitializingBean){
+                ((InitializingBean)newInstance).afterPropertiesSet();
+            }
+            for (BeanPostProcessor beanPostProcessor : beanPostProcessorList) {
+                newInstance = beanPostProcessor.postProcessAfterInitialization( newInstance,beanName);
+            }
+            return newInstance;
         } catch (InstantiationException e) {
             e.printStackTrace();
         } catch (IllegalAccessException e) {
@@ -75,6 +95,7 @@ public class YanzwApplicationContext {
                     className = className.replace("\\", ".");
                     Class<?> clazz = appClassLoader.loadClass(className);
                     if (clazz.isAnnotationPresent(Component.class)) {
+
                         //判断作用域，即单例还是多例
                         //BeanDefinition  核心
                         Component componentAnnotation = clazz.getDeclaredAnnotation(Component.class);
@@ -84,6 +105,11 @@ public class YanzwApplicationContext {
                         }
                         BeanDefinition beanDefinition = new BeanDefinition();
                         beanDefinition.setClazz(clazz);
+                        if (BeanPostProcessor.class.isAssignableFrom(clazz)) {//当前类是否实现了BeanPostProcessor
+                            //如果实现了则实例化该对象，其实真正的spring底层并不是用此方式实例化，而是通过getBean的方式
+                            BeanPostProcessor instance = (BeanPostProcessor)clazz.getDeclaredConstructor().newInstance();
+                            beanPostProcessorList.add(instance);
+                        }
                         if (clazz.isAnnotationPresent(Scope.class)) {
                             Scope scopeAnnotation = clazz.getDeclaredAnnotation(Scope.class);
                         } else {
@@ -93,6 +119,14 @@ public class YanzwApplicationContext {
                         beanDefinitionMap.put(beanName,beanDefinition);
                     }
                 } catch (ClassNotFoundException e) {
+                    e.printStackTrace();
+                } catch (InstantiationException e) {
+                    e.printStackTrace();
+                } catch (InvocationTargetException e) {
+                    e.printStackTrace();
+                } catch (NoSuchMethodException e) {
+                    e.printStackTrace();
+                } catch (IllegalAccessException e) {
                     e.printStackTrace();
                 }
             }
